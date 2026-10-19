@@ -4946,6 +4946,13 @@ export interface CanonicalPendingAdmission {
   text: string
   controls?: ('steer' | 'replace')[] | null
   steering?: boolean | null
+  author?: CanonicalTurnAuthor | null
+}
+export interface CanonicalTurnAuthor {
+  id?: string | null
+  name?: string | null
+  is_bot?: boolean
+  origin?: string | null
 }
 export interface CanonicalPendingPrompt {
   kind: 'approval' | 'clarify'
@@ -5111,12 +5118,6 @@ export interface CanonicalSubmitParams {
 export interface CanonicalAttachment {
   path: string
   mime: string
-}
-export interface CanonicalTurnAuthor {
-  id?: string | null
-  name?: string | null
-  is_bot?: boolean
-  origin?: string | null
 }
 export interface CanonicalModelOverride {
   model: string

@@ -69,6 +69,9 @@ class PendingAdmission(AdmissionReceipt):
     # A queued admission in transfer to the running turn (``prompt.steer_queued``): it reads ``started``
     # but goes back to its queue place if its text never reached that turn.
     steering: bool = False
+    # The author the admission's persisted payload names (``cli_turn_v1`` and its siblings), so a
+    # viewer can tell a bot's queued message from its own; None when the payload names nobody.
+    author: dict | None = None
 
 
 @dataclass(frozen=True)
