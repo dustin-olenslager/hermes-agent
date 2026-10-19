@@ -9161,6 +9161,17 @@
             ],
             "default": null,
             "title": "Steering"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalTurnAuthor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
