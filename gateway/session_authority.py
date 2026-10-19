@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
@@ -109,6 +110,37 @@ async def keyed_turn(table, key, *, queued=None):
         entry[1] -= 1
         if not entry[1]:
             del table[key]
+
+
+def _pending_payload(row):
+    """The admission row's committed payload; a malformed JSON payload reads as empty."""
+    payload = row.get('payload')
+    if isinstance(payload, (str, bytes)):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _pending_author(payload):
+    """The author a pending admission's payload already persists, or None.
+
+    The delivery path stamps a bot-authored input's author in ``cli_turn_v1`` (a relayed or peer bot
+    delivery); the native and automation producers stamp theirs in their own envelope. This is a
+    read-only projection of that stamp: it grants nothing and writes nothing.
+    """
+    from agent.turn_author import parse_turn_author
+    candidates = [payload.get('turn_author')]
+    for key in ('cli_turn_v1', 'api_turn_v1', 'local_automation_v1'):
+        envelope = payload.get(key)
+        if isinstance(envelope, dict):
+            candidates.append(envelope.get('turn_author'))
+    for candidate in candidates:
+        author = parse_turn_author(candidate)
+        if author is not None:
+            return author
+    return None
 
 
 class SessionAuthority:
@@ -384,13 +416,16 @@ class SessionAuthority:
     def _pending_receipt(self, row):
         # Only public input text crosses the viewer boundary, never the
         # private native envelope's routing or authorization provenance.
-        payload = row['payload']
+        payload = _pending_payload(row)
         text = payload.get('text')
         if text is None:
-            text = payload.get('native_text_v1', {}).get('event', {}).get('text', '')
+            native = payload.get('native_text_v1')
+            event = native.get('event') if isinstance(native, dict) else None
+            text = event.get('text', '') if isinstance(event, dict) else ''
         from gateway.session_queued_controls import queued_controls
         return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
-                                controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
+                                controls=queued_controls(self, {**row, 'payload': payload}),
+                                steering=row['outcome'] == STEERING, author=_pending_author(payload))
 
     def _publish_pending(self, ref):
         live = self.sessions[ref.session_id]

@@ -80,6 +80,13 @@ class CanonicalSessionHandle(Result):
     execution_state: Literal['idle', 'running', 'waiting', 'unknown', 'terminal']
 
 
+class CanonicalTurnAuthor(Params):
+    id: str | None = None
+    name: str | None = None
+    is_bot: bool = False
+    origin: str | None = None
+
+
 class CanonicalPendingAdmission(AdmissionStatus):
     input_id: str
     text: str
@@ -90,6 +97,9 @@ class CanonicalPendingAdmission(AdmissionStatus):
     # until that turn settles it, but it returns to ``queued`` if its text never reached the turn, so a
     # client keeps it at its queued rank. Absent from an owner that predates it.
     steering: bool | None = None
+    # Who authored the admitted input, when the admission's persisted payload names one: a bot's
+    # queued message reads as the bot's own, not as the viewer's. Absent or null for the viewer.
+    author: CanonicalTurnAuthor | None = None
 
 
 class CanonicalPendingPrompt(Result):
@@ -179,13 +189,6 @@ class CanonicalListResult(Result):
 class CanonicalAttachment(Params):
     path: str
     mime: str
-
-
-class CanonicalTurnAuthor(Params):
-    id: str | None = None
-    name: str | None = None
-    is_bot: bool = False
-    origin: str | None = None
 
 
 class CanonicalModelOverride(Params):
