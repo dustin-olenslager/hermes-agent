@@ -52,6 +52,8 @@ export interface QueuedDeliveryNotice {
 export interface QueuedDeliverySessionOwner {
   connectionId?: string
   profile?: string
+  /** The route's pinned target profile outranks its own name, as elsewhere. */
+  targetProfile?: string
 }
 
 /** Target key -> FIFO rows for that target, oldest claim first. */
@@ -210,7 +212,7 @@ export function selectQueuedDeliveriesForSession(
     return EMPTY
   }
 
-  const profile = text(typeof owner === 'string' ? owner : owner.profile).toLowerCase()
+  const profile = text(typeof owner === 'string' ? owner : (owner.targetProfile ?? owner.profile)).toLowerCase()
 
   if (!profile) {
     return EMPTY

@@ -108,6 +108,18 @@ describe('queued delivery store', () => {
     expect(rows.map(row => row.id)).toEqual(['earlier', 'later'])
   })
 
+  it('prefers a route-pinned target profile over the owner profile name', () => {
+    noteQueuedDelivery(notice())
+
+    const rows = selectQueuedDeliveriesForSession($queuedDeliveriesByTarget.get(), {
+      connectionId: 'local',
+      profile: 'gateway-default',
+      targetProfile: 'bob'
+    })
+
+    expect(rows.map(row => row.id)).toEqual(['dlv-1'])
+  })
+
   it('matches a bare profile owner across the connections that host it', () => {
     noteQueuedDelivery(notice({ id: 'here' }))
     noteQueuedDelivery(notice({ id: 'there', targetConnection: 'remote-1' }))
