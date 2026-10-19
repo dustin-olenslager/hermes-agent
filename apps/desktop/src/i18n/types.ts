@@ -2942,6 +2942,15 @@ export interface Translations extends NoticeTranslations {
     attachmentOnly: string
     emptyTurn: string
     hiddenQueued: string
+    /** Attribution label for a bot-authored row ("From <bot>"). */
+    queueBotAuthor: (name: string) => string
+    /** Generic stand-in when a bot row names no sender profile or handle. */
+    queueBotFallback: string
+    queueBotQueued: string
+    queueBotDelivering: string
+    queueBotFailed: string
+    /** `age` is already-localized relative time ("4 min. ago"). */
+    queueBotStuck: (age: string) => string
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string

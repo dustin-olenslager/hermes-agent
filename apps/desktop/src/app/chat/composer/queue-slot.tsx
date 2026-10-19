@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import type { HermesGateway } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { useStoresSelector } from '@/lib/use-session-slice'
+import type { QueuedDeliverySessionOwner as QueueDeliveryOwner } from '@/plugins/hermes-bots/queued-deliveries'
 import { type QueuedPromptEntry, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { notifyError } from '@/store/notifications'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
@@ -14,6 +15,11 @@ import { QueuePanel } from './queue-panel'
 
 export interface ComposerQueueSlotInputs {
   activeQueueSessionKey: null | string
+  /** Owner of the chat on screen: its bot's held deliveries share this panel. */
+  botSessionOwner?: null | QueueDeliveryOwner | string
+  /** True while the relay holds at least one delivery for that bot, so the panel
+   *  mounts (and subscribes) even when the owner has nothing queued himself. */
+  hasBotDeliveries?: boolean
   beginQueuedEdit: (entry: QueuedPromptEntry) => void
   busy: boolean
   drainNextQueued: () => Promise<unknown>
@@ -71,10 +77,12 @@ export function useComposerQueueScopeKey(
 export function renderComposerQueueSlot({
   activeQueueSessionKey,
   beginQueuedEdit,
+  botSessionOwner,
   busy,
   drainNextQueued,
   exitQueuedEdit,
   gateway,
+  hasBotDeliveries,
   queueEdit,
   queueParked,
   queuedPrompts,
@@ -83,8 +91,9 @@ export function renderComposerQueueSlot({
   steerQueuedNow,
   t
 }: ComposerQueueSlotInputs): ReactNode {
-  return activeQueueSessionKey && queuedPrompts.length > 0 ? (
+  return activeQueueSessionKey && (queuedPrompts.length > 0 || hasBotDeliveries) ? (
     <QueuePanel
+      botSessionOwner={botSessionOwner}
       busy={busy}
       editingId={queueEdit?.entryId ?? null}
       entries={queuedPrompts}

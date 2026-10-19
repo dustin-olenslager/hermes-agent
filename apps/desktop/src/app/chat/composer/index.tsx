@@ -27,6 +27,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $queuedDeliveriesByTarget, selectQueuedDeliveriesForSession } from '@/plugins/hermes-bots/queued-deliveries'
 import { sessionCompacting } from '@/store/compaction'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
@@ -38,7 +39,13 @@ import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
-import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
+import {
+  $botChatSessionIds,
+  $sessionStates,
+  $sessionTiles,
+  isBotChatSession,
+  knownOwnerForSession
+} from '@/store/session-states'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
@@ -180,6 +187,16 @@ export function ChatBar({
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = useComposerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
+  // The queue panel is also the bot-to-bot delivery panel: a delivery the relay
+  // holds for this chat's bot keeps it mounted on its own. A boolean selector
+  // (not the rows) means delivery churn does not re-render the whole composer.
+  const botQueueOwner = knownOwnerForSession(sessionId ?? activeQueueSessionKey)
+
+  const hasBotDeliveries = useStoresSelector(
+    [$queuedDeliveriesByTarget, $sessionStates, $sessionTiles],
+    () => selectQueuedDeliveriesForSession($queuedDeliveriesByTarget.get(), botQueueOwner).length > 0
+  )
+
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
   const codingDrawerId = useId()
@@ -1322,10 +1339,12 @@ export function ChatBar({
               queue={renderComposerQueueSlot({
                 activeQueueSessionKey,
                 beginQueuedEdit,
+                botSessionOwner: botQueueOwner,
                 busy,
                 drainNextQueued,
                 exitQueuedEdit,
                 gateway,
+                hasBotDeliveries,
                 queueEdit,
                 queueParked,
                 queuedPrompts,
