@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useEffect, useState } from 'react'
 
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
@@ -7,10 +8,21 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { CornerDownLeft, iconSize, Pencil, SteeringWheel } from '@/lib/icons'
+import { MINUTE, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import {
+  $queuedDeliveriesByTarget,
+  type QueuedDeliveryRow,
+  type QueuedDeliverySessionOwner,
+  type QueuedDeliveryStatus,
+  selectQueuedDeliveriesForSession
+} from '@/plugins/hermes-bots/queued-deliveries'
 import { isSteerableEntry, type QueuedPromptEntry } from '@/store/composer-queue'
 
 interface QueuePanelProps {
+  /** Owner the chat on screen resolves to; its bot is the delivery lane this
+   *  panel shows. Absent for a draft or an owner that is not known yet. */
+  botSessionOwner?: null | QueuedDeliverySessionOwner | string
   busy: boolean
   editingId: null | string
   entries: QueuedPromptEntry[]
@@ -29,6 +41,17 @@ interface QueuePanelProps {
   parked: boolean
 }
 
+/** A row of the one FIFO the panel shows: the owner's own queued turn, or a
+ *  bot-to-bot delivery the relay is holding for this bot. */
+type PanelRow = { delivery: QueuedDeliveryRow; kind: 'bot' } | { entry: QueuedPromptEntry; kind: 'prompt' }
+
+/** A bot delivery stuck behind a busy target for longer than this says so. */
+const STUCK_AFTER_MS = 2 * MINUTE
+/** Re-read the clock while a delivery waits, so the stuck hint appears on its own. */
+const AGE_TICK_MS = 30_000
+
+const rowQueuedAt = (row: PanelRow) => (row.kind === 'bot' ? row.delivery.queuedAt : row.entry.queuedAt)
+
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
   entry.displayKind === 'hidden'
     ? c.hiddenQueued
@@ -38,7 +61,19 @@ const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
  *  part of it — the entry gets an in-place expand/collapse toggle (#45664). */
 const shouldOfferExpandedPreview = (preview: string) => preview.length > 140 || preview.includes('\n')
 
+/** The bot attribution a server-owned row carries. A row without one renders
+ *  exactly as before (the plain comment glyph). */
+const serverAuthorLabel = (entry: QueuedPromptEntry, c: Translations['composer']) =>
+  entry.author ? entry.author.name?.trim() || c.queueBotFallback : ''
+
+const deliveryStatusLabel = (status: QueuedDeliveryStatus, c: Translations['composer']) =>
+  status === 'delivering' ? c.queueBotDelivering : status === 'failed' ? c.queueBotFailed : c.queueBotQueued
+
+const deliveryStatusTone = (status: QueuedDeliveryStatus) =>
+  status === 'failed' ? 'text-destructive' : status === 'delivering' ? 'text-sky-600' : 'text-muted-foreground/70'
+
 export function QueuePanel({
+  botSessionOwner,
   busy,
   editingId,
   entries,
@@ -53,6 +88,24 @@ export function QueuePanel({
   const { t } = useI18n()
   const c = t.composer
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
+  // Bumped on a timer while a delivery waits, so the stuck hint's age re-renders.
+  const [, setAgeTick] = useState(0)
+  // Bot deliveries the relay holds for THIS chat's bot, in claim order.
+  const deliveries = useStore($queuedDeliveriesByTarget)
+  const botRows = selectQueuedDeliveriesForSession(deliveries, botSessionOwner)
+  const waitingCount = botRows.filter(delivery => delivery.status === 'queued').length
+
+  // The stuck hint is time-based: re-read the clock while anything waits so a
+  // silently parked delivery becomes visible without another store write.
+  useEffect(() => {
+    if (waitingCount === 0) {
+      return
+    }
+
+    const timer = setInterval(() => setAgeTick(tick => tick + 1), AGE_TICK_MS)
+
+    return () => clearInterval(timer)
+  }, [waitingCount])
 
   const toggleExpanded = (id: string) => {
     setExpandedIds(current => {
@@ -68,11 +121,82 @@ export function QueuePanel({
     })
   }
 
-  if (entries.length === 0) {
-    return null
+  const renderExpand = (id: string, preview: string) => {
+    if (!shouldOfferExpandedPreview(preview)) {
+      return null
+    }
+
+    const isExpanded = expandedIds.has(id)
+
+    return (
+      <Tip label={isExpanded ? c.queueCollapse : c.queueExpand}>
+        <Button
+          aria-expanded={isExpanded}
+          aria-label={isExpanded ? c.queueCollapse : c.queueExpand}
+          className="size-5 rounded-md"
+          onClick={() => toggleExpanded(id)}
+          size="icon-xs"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon className={cn('transition-transform', isExpanded && 'rotate-180')} name="chevron-down" size={iconSize.xs} />
+        </Button>
+      </Tip>
+    )
   }
 
-  const renderRow = (entry: QueuedPromptEntry) => {
+  // A bot delivery is not the owner's to edit, delete, steer or reorder: the
+  // row shows the same preview treatment and nothing else. Its attribution is
+  // the sender bot (robot glyph + name) in place of the user's own avatar.
+  const renderBotRow = (delivery: QueuedDeliveryRow) => {
+    const preview = delivery.text.trim() || c.emptyTurn
+    const isExpanded = expandedIds.has(delivery.id)
+    const now = Date.now()
+    const stuck = delivery.status === 'queued' && now - delivery.queuedAt > STUCK_AFTER_MS
+    const sender = delivery.senderName || delivery.senderHandle || c.queueBotFallback
+
+    return (
+      <StatusRow
+        key={delivery.id}
+        leading={<Codicon className="text-muted-foreground/70" name="robot" size="0.8rem" />}
+        trailing={renderExpand(delivery.id, preview)}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              className="truncate text-[0.64rem] font-medium text-muted-foreground/85"
+              data-slot="queue-author"
+              title={c.queueBotAuthor(sender)}
+            >
+              {sender}
+            </span>
+            <span
+              className={cn('shrink-0 text-[0.6rem] uppercase leading-3 tracking-wide', deliveryStatusTone(delivery.status))}
+              data-slot="queue-bot-status"
+              title={delivery.status === 'failed' ? delivery.lastError : undefined}
+            >
+              {deliveryStatusLabel(delivery.status, c)}
+            </span>
+          </div>
+          <p
+            className={cn(
+              'text-[0.73rem] leading-4 text-foreground/92',
+              isExpanded ? 'max-h-40 overflow-y-auto whitespace-pre-wrap pr-1' : 'line-clamp-2 break-words'
+            )}
+          >
+            {preview}
+          </p>
+          {stuck && (
+            <div className="mt-0.5 text-[0.64rem] text-amber-600" data-slot="queue-bot-stuck">
+              {c.queueBotStuck(relativeTime(delivery.queuedAt, now))}
+            </div>
+          )}
+        </div>
+      </StatusRow>
+    )
+  }
+
+  const renderPromptRow = (entry: QueuedPromptEntry) => {
     const isEditing = editingId === entry.id
     const attachmentsCount = entry.attachments.length
 
@@ -88,8 +212,8 @@ export function QueuePanel({
     // FIFO behind it is paused until someone acknowledges the loss.
     const lost = entry.serverStatus === 'unknown'
     const preview = entryPreview(entry, c)
-    const canExpand = shouldOfferExpandedPreview(preview)
     const isExpanded = expandedIds.has(entry.id)
+    const author = serverAuthorLabel(entry, c)
 
     return (
       <StatusRow
@@ -99,28 +223,16 @@ export function QueuePanel({
         )}
         dismiss={{ label: c.queueDelete, onDismiss: () => onDelete(entry.id) }}
         key={entry.id}
-        leading={<Codicon className="text-muted-foreground/70" name="comment" size="0.8rem" />}
+        leading={
+          <Codicon
+            className="text-muted-foreground/70"
+            name={author ? 'robot' : 'comment'}
+            size="0.8rem"
+          />
+        }
         trailing={
           <>
-            {canExpand && (
-              <Tip label={isExpanded ? c.queueCollapse : c.queueExpand}>
-                <Button
-                  aria-expanded={isExpanded}
-                  aria-label={isExpanded ? c.queueCollapse : c.queueExpand}
-                  className="size-5 rounded-md"
-                  onClick={() => toggleExpanded(entry.id)}
-                  size="icon-xs"
-                  type="button"
-                  variant="ghost"
-                >
-                  <Codicon
-                    className={cn('transition-transform', isExpanded && 'rotate-180')}
-                    name="chevron-down"
-                    size={iconSize.xs}
-                  />
-                </Button>
-              </Tip>
-            )}
+            {renderExpand(entry.id, preview)}
             {renderEntryActions({
               busy,
               c,
@@ -139,6 +251,11 @@ export function QueuePanel({
         trailingVisible={isEditing || lost}
       >
         <div className="min-w-0 flex-1">
+          {author && (
+            <div className="flex min-w-0 items-center gap-1.5" data-slot="queue-author">
+              <span className="truncate text-[0.64rem] font-medium text-muted-foreground/85">{author}</span>
+            </div>
+          )}
           <p
             className={cn(
               'text-[0.73rem] leading-4 text-foreground/92',
@@ -163,6 +280,20 @@ export function QueuePanel({
     )
   }
 
+  // One FIFO: the owner's queued turns and the bot deliveries held for this bot,
+  // oldest first. A delivery claimed before a prompt sits above it, as it will
+  // reach the target.
+  const rows: PanelRow[] = [
+    ...entries.map(entry => ({ entry, kind: 'prompt' as const })),
+    ...botRows.map(delivery => ({ delivery, kind: 'bot' as const }))
+  ].sort((a, b) => rowQueuedAt(a) - rowQueuedAt(b))
+
+  if (rows.length === 0) {
+    return null
+  }
+
+  const renderRow = (row: PanelRow) => (row.kind === 'bot' ? renderBotRow(row.delivery) : renderPromptRow(row.entry))
+
   // A lost (`unknown`) turn pauses the FIFO until someone acknowledges it: its card and Discard
   // must be on screen without expanding the section, and the header names the pause (#134889 NF2).
   const lostEntries = entries.filter(entry => entry.serverStatus === 'unknown')
@@ -186,10 +317,10 @@ export function QueuePanel({
         ) : undefined
       }
       icon={<Codicon className="text-muted-foreground/70" name={paused ? 'debug-pause' : 'layers'} size="0.8rem" />}
-      label={paused ? c.queuedPaused(entries.length) : c.queued(entries.length)}
-      preview={lostEntries.length > 0 ? lostEntries.map(renderRow) : undefined}
+      label={paused ? c.queuedPaused(rows.length) : c.queued(rows.length)}
+      preview={lostEntries.length > 0 ? lostEntries.map(entry => renderPromptRow(entry)) : undefined}
     >
-      {entries.map(renderRow)}
+      {rows.map(renderRow)}
     </StatusSection>
   )
 }

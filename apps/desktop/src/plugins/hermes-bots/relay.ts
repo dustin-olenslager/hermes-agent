@@ -10,6 +10,13 @@
 import { host, LruCache } from '@hermes/plugin-sdk'
 
 import { botHandle, clearBotAttention, noteBotAttention } from './data'
+import {
+  clearQueuedDeliveries,
+  failDelivery,
+  markDelivering,
+  noteQueuedDelivery,
+  settleDelivery
+} from './queued-deliveries'
 import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
 import { ID } from './shared'
 import type { ProfileRoute, RosterRow } from './types'
@@ -590,6 +597,16 @@ async function drainRelayOutboxes() {
         // settled without an exact identity, or whose ACK was lost, retries
         // from the sender's pin instead of being silently dropped.
         for (const envelope of pending.values()) {
+          // Visibility only: the claimed envelope now sits in renderer memory,
+          // so the target bot's queue panel can list it until its reply lands.
+          noteQueuedDelivery({
+            id: String(envelope.id || ''),
+            senderHandle: String(envelope.from_handle || ''),
+            senderName: String(envelope.from_profile || ''),
+            targetConnection: String(envelope.target_connection || ''),
+            targetProfile: String(envelope.target_profile || ''),
+            text: String(envelope.message || '')
+          })
           queued.push({ envelope, sender })
         }
       } catch {
@@ -682,12 +699,16 @@ async function settleRelayDelivery(
 
   if (res.delivery_id !== envelopeId || !(res.admission_id || refused)) {
     noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
+    failDelivery(envelopeId, 'Delivery identity unavailable; retained for recovery')
 
     return
   }
 
   if (res.status !== 'settled' && res.status !== 'failed') {
-    if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
+    if (res.status === 'ambiguous') {
+      noteBotAttention(attentionKey, 'unknown_execution')
+      failDelivery(envelopeId, 'unknown_execution')
+    }
 
     return
   }
@@ -729,6 +750,8 @@ async function deliverRelayEnvelope(
         ...payload
       })
       pending.delete(envelopeId)
+      // Terminal: the sender gateway ACKed, so this envelope is no longer held.
+      settleDelivery(envelopeId)
     } catch {
       // Sender gateway unreachable — its waiter times out with guidance.
     }
@@ -745,6 +768,8 @@ async function deliverRelayEnvelope(
   // Needs-attention hook (#93091 item 3): a delivered background DM is
   // this bot's "good turn"; a classified delivery failure badges it.
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
+
+  markDelivering(envelopeId)
 
   try {
     const res = await host.requestProfile<RelayDeliverResult>(
@@ -765,7 +790,13 @@ async function deliverRelayEnvelope(
     noteBotAttention(attentionKey, reason || error?.message || error)
 
     // A transport exception can follow a committed admission; never settle it as failure.
-    if (!reason || reason === 'runtime_unavailable') {return}
+    // The envelope stays pinned for the next attempt, so its row stays visible as failed.
+    if (!reason || reason === 'runtime_unavailable') {
+      failDelivery(envelopeId, reason || error?.message || error)
+
+      return
+    }
+
     await postReply({
       error: String(error?.message || error || 'delivery failed'),
       ...(reason
@@ -841,6 +872,9 @@ export function stopBotRelay() {
   // Unpin every relay-retained socket (#93594): with the relay stopped the
   // pooled entries return to dispose-at-refcount-0 semantics.
   releaseRelayRetention()
+  // Nothing is being delivered once the relay stops: drop the visibility rows
+  // (the sender's claimed directory repopulates them on the next start).
+  clearQueuedDeliveries()
 
   if (relay.rosterTimer !== null) {
     clearInterval(relay.rosterTimer)

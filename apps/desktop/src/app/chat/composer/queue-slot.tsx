@@ -6,7 +6,12 @@ import { useStoresSelector } from '@/lib/use-session-slice'
 import { type QueuedPromptEntry, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { notifyError } from '@/store/notifications'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
-import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
+import {
+  $sessionStates,
+  $sessionTiles,
+  knownOwnerForSession,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 
 import type { QueueEditState } from './composer-utils'
 import { cancelQueuedPrompt, discardLostPrompt, steerQueuedPrompt } from './discard-lost-prompt'
@@ -83,8 +88,12 @@ export function renderComposerQueueSlot({
   steerQueuedNow,
   t
 }: ComposerQueueSlotInputs): ReactNode {
-  return activeQueueSessionKey && queuedPrompts.length > 0 ? (
+  // Mounted whenever a chat has a queue scope, even with nothing queued yet: the
+  // panel also lists the bot deliveries the relay holds for this bot, and only a
+  // mounted panel subscribes to them (it renders nothing while both are empty).
+  return activeQueueSessionKey ? (
     <QueuePanel
+      botSessionOwner={knownOwnerForSession(sessionId ?? activeQueueSessionKey)}
       busy={busy}
       editingId={queueEdit?.entryId ?? null}
       entries={queuedPrompts}

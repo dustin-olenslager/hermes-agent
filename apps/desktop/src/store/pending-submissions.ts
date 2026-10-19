@@ -8,7 +8,16 @@ import { $sessions, resolveComposerSessionKey } from './session'
 const ENTRY_PREFIX = 'hermes.desktop.pendingSubmissions.v2:'
 // The pre-v2 single blob, read for upgrade and drained per session as entries are rewritten.
 const LEGACY_KEY = 'hermes.desktop.pendingSubmissions.v1'
+/** Who authored a receipt, when its owner names one (a bot-to-bot delivery it
+ *  holds). The generated contract does not carry the field yet — a sibling
+ *  branch adds it — so it is read defensively here and never trusted for ids. */
+export interface PendingSubmissionAuthor {
+  isBot?: boolean
+  name?: string
+}
+
 interface PendingSubmission {
+  author?: PendingSubmissionAuthor
   id: string
   text: string
   displayText?: string
@@ -169,6 +178,26 @@ const RETIRED_MEMORY = 200
 const isStale = (raw: { admission_id: string; status: string }, known: Record<string, PendingSubmission>) =>
   (STATUS_RANK[raw.status] ?? 0) < (STATUS_RANK[known[raw.admission_id]?.status ?? ''] ?? -1)
 
+/** Author attribution off a raw receipt: an object with optional `name` and
+ *  `isBot`. Anything else is ignored, so an older owner's payload is unchanged. */
+function receiptAuthor(raw: { author?: unknown }): PendingSubmissionAuthor | undefined {
+  const value = raw?.author
+
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+
+  const { isBot, name } = value as { isBot?: unknown; name?: unknown }
+  const label = typeof name === 'string' ? name.trim() : ''
+
+  const author: PendingSubmissionAuthor = {
+    ...(typeof isBot === 'boolean' ? { isBot } : {}),
+    ...(label ? { name: label } : {})
+  }
+
+  return Object.keys(author).length > 0 ? author : undefined
+}
+
 function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmission>) {
   const receipts = new Map<string, PendingSubmission>()
   const admissionByInput = new Map<string, string>()
@@ -196,6 +225,7 @@ function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmis
       id,
       text: typeof raw.user === 'string' ? raw.user : (known[id]?.text ?? ''),
       status: stale ? known[id].status : raw.status,
+      author: receiptAuthor(raw),
       ...(Array.isArray(raw.controls) ? { controls: raw.controls.filter((c: unknown) => typeof c === 'string') } : {})
     })
   }
@@ -227,7 +257,13 @@ function projectQueue(
 
     if (receipt) {
       if (receipt.status !== 'started') {
-        next.push({ ...entry, id: receipt.id, serverStatus: receipt.status, serverControls: receipt.controls })
+        next.push({
+          ...entry,
+          id: receipt.id,
+          serverStatus: receipt.status,
+          serverControls: receipt.controls,
+          author: receipt.author
+        })
       }
 
       receipts.delete(receipt.id)
@@ -245,7 +281,8 @@ function projectQueue(
         attachments: [],
         queuedAt: Date.now(),
         serverStatus: receipt.status,
-        serverControls: receipt.controls
+        serverControls: receipt.controls,
+        ...(receipt.author ? { author: receipt.author } : {})
       })
     }
   }
@@ -285,11 +322,13 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
   for (const raw of value) {
     if (typeof raw?.admission_id === 'string' && !isStale(raw, known)) {
       const previous = known[raw.admission_id]
+      const author = receiptAuthor(raw)
 
       known[raw.admission_id] = {
         ...previous,
         id: raw.admission_id,
         text: raw.user ?? previous?.text ?? '',
+        ...(author ? { author } : {}),
         // A steer in transfer reads `started` but can still go back to its queue place: it never
         // raises the admission's rank, so the owner's later `queued` listing repaints its card.
         status: raw.steering === true ? (previous?.status ?? 'queued') : raw.status,

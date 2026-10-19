@@ -58,6 +58,10 @@ export interface QueuedPromptEntry {
    *  it, exactly like the composer's in-process counter. */
   drainFailures?: number
   attachments: ComposerAttachment[]
+  /** Who authored a server-owned row, when its owner names one (a bot-to-bot
+   *  delivery the gateway holds for this session). Projected from the pending
+   *  snapshot; absent rows keep the plain user treatment. */
+  author?: { isBot?: boolean; name?: string }
   queuedAt: number
 }
 
