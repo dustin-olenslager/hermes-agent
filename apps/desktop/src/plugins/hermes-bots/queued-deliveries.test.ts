@@ -76,9 +76,7 @@ describe('queued delivery store', () => {
     markDelivering('dlv-1')
     failDelivery('dlv-1', 'runtime_unavailable')
 
-    expect(rowsFor()[0]).toEqual(
-      expect.objectContaining({ lastError: 'runtime_unavailable', status: 'failed' })
-    )
+    expect(rowsFor()[0]).toEqual(expect.objectContaining({ lastError: 'runtime_unavailable', status: 'failed' }))
 
     // The relay retrying the pinned envelope puts it back in the queue.
     noteQueuedDelivery(notice())

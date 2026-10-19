@@ -93,7 +93,7 @@ export function QueuePanel({
   // Bot deliveries the relay holds for THIS chat's bot, in claim order.
   const deliveries = useStore($queuedDeliveriesByTarget)
   const botRows = selectQueuedDeliveriesForSession(deliveries, botSessionOwner)
-  const waitingCount = botRows.filter(delivery => delivery.status === 'queued').length
+  const waitingCount = botRows.filter(delivery => delivery.status !== 'failed').length
 
   // The stuck hint is time-based: re-read the clock while anything waits so a
   // silently parked delivery becomes visible without another store write.
@@ -139,7 +139,11 @@ export function QueuePanel({
           type="button"
           variant="ghost"
         >
-          <Codicon className={cn('transition-transform', isExpanded && 'rotate-180')} name="chevron-down" size={iconSize.xs} />
+          <Codicon
+            className={cn('transition-transform', isExpanded && 'rotate-180')}
+            name="chevron-down"
+            size={iconSize.xs}
+          />
         </Button>
       </Tip>
     )
@@ -152,7 +156,9 @@ export function QueuePanel({
     const preview = delivery.text.trim() || c.emptyTurn
     const isExpanded = expandedIds.has(delivery.id)
     const now = Date.now()
-    const stuck = delivery.status === 'queued' && now - delivery.queuedAt > STUCK_AFTER_MS
+    // A row still waiting (queued, or delivering with no answer yet) past the
+    // threshold says so — a silent lane is exactly what this panel is for.
+    const stuck = delivery.status !== 'failed' && now - delivery.queuedAt > STUCK_AFTER_MS
     const sender = delivery.senderName || delivery.senderHandle || c.queueBotFallback
 
     return (
@@ -171,7 +177,10 @@ export function QueuePanel({
               {sender}
             </span>
             <span
-              className={cn('shrink-0 text-[0.6rem] uppercase leading-3 tracking-wide', deliveryStatusTone(delivery.status))}
+              className={cn(
+                'shrink-0 text-[0.6rem] uppercase leading-3 tracking-wide',
+                deliveryStatusTone(delivery.status)
+              )}
               data-slot="queue-bot-status"
               title={delivery.status === 'failed' ? delivery.lastError : undefined}
             >
@@ -189,6 +198,11 @@ export function QueuePanel({
           {stuck && (
             <div className="mt-0.5 text-[0.64rem] text-amber-600" data-slot="queue-bot-stuck">
               {c.queueBotStuck(relativeTime(delivery.queuedAt, now))}
+            </div>
+          )}
+          {delivery.status === 'failed' && delivery.lastError && (
+            <div className="mt-0.5 truncate text-[0.64rem] text-destructive/80" data-slot="queue-bot-error">
+              {delivery.lastError}
             </div>
           )}
         </div>
@@ -223,13 +237,7 @@ export function QueuePanel({
         )}
         dismiss={{ label: c.queueDelete, onDismiss: () => onDelete(entry.id) }}
         key={entry.id}
-        leading={
-          <Codicon
-            className="text-muted-foreground/70"
-            name={author ? 'robot' : 'comment'}
-            size="0.8rem"
-          />
-        }
+        leading={<Codicon className="text-muted-foreground/70" name={author ? 'robot' : 'comment'} size="0.8rem" />}
         trailing={
           <>
             {renderExpand(entry.id, preview)}

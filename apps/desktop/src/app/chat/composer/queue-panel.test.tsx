@@ -39,8 +39,7 @@ const deliveryRow = (overrides: Partial<QueuedDeliveryRow> = {}): QueuedDelivery
   ...overrides
 })
 
-const seedDelivery = (row: QueuedDeliveryRow = deliveryRow()) =>
-  $queuedDeliveriesByTarget.set({ 'local::bob': [row] })
+const seedDelivery = (row: QueuedDeliveryRow = deliveryRow()) => $queuedDeliveriesByTarget.set({ 'local::bob': [row] })
 
 type PanelProps = Parameters<typeof QueuePanel>[0]
 
@@ -203,7 +202,8 @@ describe('QueuePanel bot deliveries', () => {
 
     await act(async () => failDelivery('dlv-1', 'target busy'))
     expect(await screen.findByText(en.composer.queueBotFailed)).toBeTruthy()
-    expect(screen.getByText(en.composer.queueBotFailed).getAttribute('title')).toBe('target busy')
+    // The reason stays readable on the row, not only in a hover title.
+    expect(screen.getByText('target busy')).toBeTruthy()
 
     await act(async () => settleDelivery('dlv-1'))
     expect(screen.queryByText('bot words')).toBeNull()
