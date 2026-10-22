@@ -20,48 +20,51 @@ import gzip
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.platforms.api_server import (
-    APIServerAdapter,
-    _cap_message_fields,
-    _gzip_accepts,
-    _gzip_allows_type,
-    gzip_middleware,
+from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server_transcript import (
+    accepts_gzip,
+    allows_gzip_type,
+    cap_message_fields,
+    make_gzip_middleware,
+    message_response,
 )
 
 
 def test_gzip_accepts_honours_quality_and_wildcards():
-    assert _gzip_accepts("gzip") is True
-    assert _gzip_accepts("deflate, gzip;q=0.5") is True
-    assert _gzip_accepts("*") is True
-    assert _gzip_accepts("gzip;q=0") is False
-    assert _gzip_accepts("identity") is False
-    assert _gzip_accepts("") is False
-    assert _gzip_accepts(None) is False
+    assert accepts_gzip("gzip") is True
+    assert accepts_gzip("deflate, gzip;q=0.5") is True
+    assert accepts_gzip("*") is True
+    assert accepts_gzip("gzip;q=0") is False
+    assert accepts_gzip("identity") is False
+    assert accepts_gzip("") is False
+    assert accepts_gzip(None) is False
 
 
 def test_gzip_allows_type_excludes_media_streams_and_archives():
-    assert _gzip_allows_type("application/json") is True
-    assert _gzip_allows_type("text/plain; charset=utf-8") is True
-    assert _gzip_allows_type("image/png") is False
-    assert _gzip_allows_type("audio/mpeg") is False
-    assert _gzip_allows_type("text/event-stream") is False
-    assert _gzip_allows_type("application/zip") is False
-    assert _gzip_allows_type("") is False
+    assert allows_gzip_type("application/json") is True
+    assert allows_gzip_type("text/plain; charset=utf-8") is True
+    assert allows_gzip_type("image/png") is False
+    assert allows_gzip_type("audio/mpeg") is False
+    assert allows_gzip_type("text/event-stream") is False
+    assert allows_gzip_type("application/zip") is False
+    assert allows_gzip_type("") is False
 
 
 def test_cap_message_fields_truncates_and_names_what_it_cut():
-    capped = _cap_message_fields({"content": "x" * 40, "role": "assistant"}, 10)
+    capped = cap_message_fields({"content": "x" * 40, "role": "assistant"}, 10)
     assert capped["content"].startswith("x" * 10)
     assert "30 characters omitted" in capped["content"]
     assert capped["truncated_fields"] == ["content"]
     assert capped["role"] == "assistant"
 
-    untouched = _cap_message_fields({"content": "short"}, 10)
+    untouched = cap_message_fields({"content": "short"}, 10)
     assert untouched == {"content": "short"}
 
 
 def test_message_response_defaults_keep_reasoning_and_full_content():
     message = {"id": "m1", "role": "assistant", "content": "hi", "reasoning": "why", "session_id": "s"}
+    # The adapter's staticmethod is the seam the routes call; it must stay the module's shape.
+    assert APIServerAdapter._message_response(message) == message_response(message)
     default = APIServerAdapter._message_response(message)
     assert default["reasoning"] == "why"
     assert default["content"] == "hi"
@@ -84,7 +87,7 @@ def test_message_response_drops_reasoning_only_when_asked():
 
 def _run_middleware_case(headers, response):
     async def serve():
-        app = web.Application(middlewares=[gzip_middleware])
+        app = web.Application(middlewares=[make_gzip_middleware(web)])
 
         async def handler(_request):
             return response()
