@@ -165,17 +165,19 @@ def test_terminal_execution_cannot_be_rewritten(monkeypatch, tmp_path):
     assert executions.latest_execution("immutable")["status"] == "completed"
 
 
-def test_retention_bounds_terminal_history_but_preserves_inflight(monkeypatch, tmp_path):
+def test_retention_bounds_one_jobs_history_but_preserves_inflight(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
-    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 3)
+    # A zero window leaves the per-job floor as the only bound, which is what this asserts.
+    monkeypatch.setattr(executions, "TERMINAL_RETENTION_DAYS", 0.0)
+    monkeypatch.setattr(executions, "TERMINAL_RETENTION_PER_JOB", 3)
     inflight = executions.create_execution("live", source="builtin")
     executions.mark_execution_running(inflight["id"])
     for index in range(8):
-        row = executions.create_execution(f"done-{index}", source="builtin")
+        row = executions.create_execution("chatty", source="builtin")
         executions.finish_execution(row["id"], success=True)
 
-    records = executions.list_executions(limit=100)
-    assert len([row for row in records if row["status"] == "completed"]) == 3
+    records = executions.list_executions(job_id="chatty", limit=100)
+    assert len(records) == 3
     assert executions.latest_execution("live")["status"] == "running"
 
 
@@ -183,10 +185,11 @@ def test_recently_finished_long_running_execution_survives_retention(
     monkeypatch, tmp_path
 ):
     executions = _point_ledger(monkeypatch, tmp_path)
-    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 1)
-    long_running = executions.create_execution("long-running", source="builtin")
+    monkeypatch.setattr(executions, "TERMINAL_RETENTION_DAYS", 0.0)
+    monkeypatch.setattr(executions, "TERMINAL_RETENTION_PER_JOB", 1)
+    long_running = executions.create_execution("shared", source="builtin")
     assert executions.mark_execution_running(long_running["id"]) is not None
-    newer = executions.create_execution("newer", source="builtin")
+    newer = executions.create_execution("shared", source="builtin")
     assert executions.finish_execution(newer["id"], success=True) is not None
 
     finished = executions.finish_execution(long_running["id"], success=True)
