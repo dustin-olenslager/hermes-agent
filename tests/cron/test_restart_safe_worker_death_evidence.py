@@ -93,8 +93,9 @@ else:
     )
     with use_cron_store(home):
         # A lost worker must obey the same bounded history as normal finishes.
-        monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 2)
-        for index in range(executions.MAX_TERMINAL_EXECUTIONS):
+        monkeypatch.setattr(executions, "TERMINAL_RETENTION_DAYS", 0.0)
+        monkeypatch.setattr(executions, "TERMINAL_RETENTION_PER_JOB", 1)
+        for index in range(2):
             old = executions.create_execution(f"old-{index}", source="direct")
             executions.finish_execution(old["id"], success=True)
         job = create_job(prompt="Reply OK", schedule="every 1h", deliver="local")
@@ -122,7 +123,10 @@ else:
         assert result["claim_released"], result
         assert "worker-probe-startup-sentinel" in (result["job_error"] or ""), result
         assert len(delivered) == 1, result
-        assert len(executions.list_executions()) <= executions.MAX_TERMINAL_EXECUTIONS
+        # Retention is per job, so two single-row jobs plus this job's death evidence survive,
+        # one row each: the ledger stays bounded without erasing the row under investigation.
+        surviving_rows = executions.list_executions()
+        assert len(surviving_rows) == 3, [row["job_id"] for row in surviving_rows]
         from cron.scheduler_worker_failure import record_unknown_worker_outcome
 
         # Re-observing an old terminal row cannot notify twice or erase a newer fire.

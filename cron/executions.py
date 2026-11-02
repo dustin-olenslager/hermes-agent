@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -30,7 +30,18 @@ logger = logging.getLogger(__name__)
 # that temporarily enter another profile cannot leak that profile's records into the import-time
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
-MAX_TERMINAL_EXECUTIONS = 1000
+# Terminal-history retention. This replaced a single global cap on the newest N terminal
+# rows across the whole fleet (1000): a five-minute watcher could evict a quiet job's last
+# failure in under eight hours, and after that "did this fail in 24h / 7d?" answered zero by
+# construction, because the row carrying the answer was gone. A terminal row now survives when
+# it is inside the time window OR among its own job's newest TERMINAL_RETENTION_PER_JOB rows
+# that are past the window, so another job's churn can never evict it.
+TERMINAL_RETENTION_DAYS = 30.0
+TERMINAL_RETENTION_PER_JOB = 50
+# A cold table (first prune after an upgrade) can hold tens of thousands of overdue rows. Deleting
+# them all in one statement holds the write lock for seconds, so each prune takes a bounded bite and
+# the next finish takes the next one. Steady state deletes a handful per pass.
+TERMINAL_PRUNE_BATCH_ROWS = 5000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
@@ -95,6 +106,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
+    )
+    # Range for the retention prune. Without it every finish scans the whole ledger, and the
+    # ledger is a 30-day table by design.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_finished ON executions(finished_at)"
     )
 
 
@@ -199,14 +215,51 @@ def touch_execution_progress(execution_id: str) -> bool:
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
+    """Drop terminal rows that are past the window AND below their own job's per-job floor.
+
+    Both halves matter. The window bounds ordinary churn; the per-job floor is what keeps the
+    ledger usable as evidence — a low-frequency job's last failure outlives the window, and no
+    amount of another job's traffic can evict it. The floor is counted among the rows past the
+    window, not the job's whole history: a job that also ran inside the window keeps the newest
+    TERMINAL_RETENTION_PER_JOB of its old rows on top, which over-keeps by at most that much per
+    job and never under-keeps. A row with no ``finished_at`` is never pruned (an unparseable
+    timestamp is a defect to look at, not a row to delete).
+    """
+    now = _hermes_now()
+    cutoff = (now - timedelta(days=TERMINAL_RETENTION_DAYS)).isoformat()
+    # Timestamps are ISO strings carrying the offset they were written in, so text order is not
+    # instant order: the same wall time reads as two different strings across a timezone change,
+    # and the gap can reach 26 hours. The index range therefore starts two days early - a superset
+    # the precise julianday predicate below then narrows. That keeps the scan proportional to the
+    # rows actually near the cutoff instead of the whole ledger.
+    text_bound = (now - timedelta(days=TERMINAL_RETENTION_DAYS - 2)).isoformat()
     conn.execute(
-        """DELETE FROM executions WHERE id IN (
-             SELECT id FROM executions
-             WHERE status IN ('completed','failed','unknown')
-             ORDER BY julianday(finished_at) DESC, finished_at DESC,
-                      julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
-           )""",
-        (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
+        """WITH stale AS (
+             SELECT id,
+                    job_id,
+                    julianday(finished_at) AS finished_jd,
+                    finished_at,
+                    julianday(claimed_at) AS claimed_jd,
+                    claimed_at
+               FROM executions
+              WHERE status IN ('completed','failed','unknown')
+                AND finished_at IS NOT NULL
+                AND finished_at < ?
+                AND julianday(finished_at) < julianday(?)
+           ), ranked AS (
+             SELECT id FROM (
+               SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY job_id
+                        ORDER BY finished_jd DESC, finished_at DESC,
+                                 claimed_jd DESC, claimed_at DESC, id DESC
+                      ) AS recency_rank
+                 FROM stale
+             ) WHERE recency_rank > ?
+             LIMIT ?
+           )
+           DELETE FROM executions WHERE id IN (SELECT id FROM ranked)""",
+        (text_bound, cutoff, max(1, int(TERMINAL_RETENTION_PER_JOB)),
+         max(1, int(TERMINAL_PRUNE_BATCH_ROWS))),
     )
 
 
