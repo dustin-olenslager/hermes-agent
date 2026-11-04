@@ -11,6 +11,15 @@ from typing import Any, Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
+# The one sentence emitted for a network/DNS failure (``_summarize_api_error``, when the cause chain
+# matches ``_NETWORK_RESOLUTION_MARKERS``). Exported as a constant because the scheduler re-raises
+# this string as a bare ``RuntimeError``: by the time cron classifies the failure the transport
+# exception is gone and this text is the only evidence left (``cron/unreachable_retry.py``).
+PROVIDER_UNREACHABLE_SUMMARY = (
+    "Hermes can't reach the model provider. You may be offline. "
+    "Check your internet connection and try again."
+)
+
 # Substrings of the plain ``ValueError`` jiter (the openai/anthropic SDKs' SSE JSON parser)
 # raises for a truncated/corrupted event-stream frame — wire trouble, not local validation
 # (#65147). Serde-style vocabulary anchored on the "at line" suffix; classify through
@@ -182,10 +191,7 @@ class ApiErrorSummaryMixin:
         while current is not None and id(current) not in seen:
             seen.add(id(current))
             if any(marker in str(current).lower() for marker in _NETWORK_RESOLUTION_MARKERS):
-                return (
-                    "Hermes can't reach the model provider. You may be offline. "
-                    "Check your internet connection and try again."
-                )
+                return PROVIDER_UNREACHABLE_SUMMARY
             current = current.__cause__ or current.__context__
 
         from agent.timeout_error_summary import summarize_timeout_error

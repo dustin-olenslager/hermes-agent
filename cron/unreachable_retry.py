@@ -62,12 +62,34 @@ def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
         return False
     from cron.scheduler_preflight import _is_transient_provider_resolve_error
 
-    return _is_transient_provider_resolve_error(exc)
+    if _is_transient_provider_resolve_error(exc):
+        return True
+    # ``cron.scheduler._final_response_from_result`` re-raises the agent's failure SUMMARY as a
+    # fresh ``RuntimeError`` built from a string, so a DNS failure that surfaced inside the turn
+    # arrives here with no cause chain at all — the transport type is unrecoverable. That sentence
+    # is emitted only for network/DNS failures, and the zero-call gate above already proves nothing
+    # ran or was spent, so recognise it by name rather than by transport (#cron-dns-outage).
+    from agent.api_error_summary import PROVIDER_UNREACHABLE_SUMMARY
+
+    return PROVIDER_UNREACHABLE_SUMMARY in str(exc)
 
 
 def _ladder_applies(job: dict[str, Any]) -> bool:
-    """The ladder's applicability gate: recurring, not paused, and enabled in config."""
-    return is_recurring(job) and job.get("state") != "paused" and retry_enabled()
+    """The ladder's applicability gate: recurring, not paused, enabled in config, and carrying
+    no pre-run script.
+
+    The script runs BEFORE the provider is resolved (``cron.scheduler.run_job``), so a DNS
+    failure can arrive after it already did something — sent a mail, posted a summary. A re-run
+    would repeat that, and nothing in the record distinguishes a script that gathers data from
+    one that acts, so this must not guess: a job with a script keeps the terminal behaviour.
+    Model-only side effects stay covered by the zero-call gate in
+    ``is_model_unreachable_failure``."""
+    return (
+        is_recurring(job)
+        and job.get("state") != "paused"
+        and retry_enabled()
+        and not job.get("script")
+    )
 
 
 def _ladder_instant(job: dict[str, Any], natural_next: Optional[datetime],

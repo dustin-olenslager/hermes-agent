@@ -541,7 +541,12 @@ the real result when a re-run succeeds, or a normal failure alert once the
 ladder is exhausted. Any run that reaches the model (success or failure)
 resets the ladder. One-shot jobs are excluded: their dispatch accounting is
 at-most-times and a consumed dispatch is never resurrected. Retries never
-fire past the schedule's own next occurrence when that comes sooner.
+fire past the schedule's own next occurrence when that comes sooner. A failure
+that surfaces inside the turn counts too: the scheduler re-raises its own
+"can't reach the model provider" summary with no underlying exception attached,
+so that message is recognised on its own (still only when zero calls were made). A job
+with a pre-run `script` is excluded: the script runs before the model is resolved, so a
+re-run could repeat whatever it already did.
 
 ```yaml
 cron:
